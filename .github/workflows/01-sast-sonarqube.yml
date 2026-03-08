@@ -76,6 +76,14 @@ jobs:
           SCANNER_VERSION="5.0.1.3006"
           SCANNER_FILE="sonar-scanner-cli-${SCANNER_VERSION}-linux.zip"
           
+          # Remove if exists
+          rm -rf sonar-scanner-${SCANNER_VERSION}-linux
+          rm -f $SCANNER_FILE
+          
+          echo "Downloading from:"
+          echo "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/$SCANNER_FILE"
+          echo ""
+          
           wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/$SCANNER_FILE
           
           if [ $? -eq 0 ]; then
@@ -85,13 +93,23 @@ jobs:
             exit 1
           fi
           
-          unzip -q $SCANNER_FILE
-          echo "✅ Extracted successfully"
+          # Extract with -o flag to overwrite without prompting
+          echo "Extracting..."
+          unzip -q -o $SCANNER_FILE
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Extracted successfully"
+          else
+            echo "❌ Extraction failed"
+            exit 1
+          fi
           
           # Add to PATH
           echo "/tmp/sonar-scanner/sonar-scanner-${SCANNER_VERSION}-linux/bin" >> $GITHUB_PATH
+          echo ""
           
           # Verify
+          echo "Verifying installation..."
           sonar-scanner --version
 
       # ============================================
@@ -217,7 +235,7 @@ jobs:
           echo "  3️⃣ Build (Docker)"
           echo "  4️⃣ Container (Trivy)"
           echo "  5️⃣ Deploy (DMZ)"
-          echo "  6️��� DAST (ZAP)"
+          echo "  6️⃣ DAST (ZAP)"
           echo "  7️⃣ Reporting"
           echo ""
 
