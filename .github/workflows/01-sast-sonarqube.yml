@@ -70,15 +70,18 @@ jobs:
         run: |
           echo "Downloading SonarQube Scanner..."
           
-          mkdir -p /tmp/sonar-scanner
-          cd /tmp/sonar-scanner
+          # Create directory in runner's work directory
+          SCANNER_DIR="${GITHUB_WORKSPACE}/../sonar-scanner"
+          mkdir -p "$SCANNER_DIR"
+          cd "$SCANNER_DIR"
           
           SCANNER_VERSION="5.0.1.3006"
           SCANNER_FILE="sonar-scanner-cli-${SCANNER_VERSION}-linux.zip"
+          SCANNER_HOME="sonar-scanner-${SCANNER_VERSION}-linux"
           
           # Remove if exists
-          rm -rf sonar-scanner-${SCANNER_VERSION}-linux
-          rm -f $SCANNER_FILE
+          rm -rf "$SCANNER_HOME"
+          rm -f "$SCANNER_FILE"
           
           echo "Downloading from:"
           echo "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/$SCANNER_FILE"
@@ -93,9 +96,9 @@ jobs:
             exit 1
           fi
           
-          # Extract with -o flag to overwrite without prompting
+          # Extract with -o flag
           echo "Extracting..."
-          unzip -q -o $SCANNER_FILE
+          unzip -q -o "$SCANNER_FILE"
           
           if [ $? -eq 0 ]; then
             echo "✅ Extracted successfully"
@@ -105,11 +108,12 @@ jobs:
           fi
           
           # Add to PATH
-          echo "/tmp/sonar-scanner/sonar-scanner-${SCANNER_VERSION}-linux/bin" >> $GITHUB_PATH
-          echo ""
+          echo "Adding to PATH: $SCANNER_DIR/$SCANNER_HOME/bin"
+          echo "$SCANNER_DIR/$SCANNER_HOME/bin" >> $GITHUB_PATH
           
-          # Verify
+          echo ""
           echo "Verifying installation..."
+          export PATH="$SCANNER_DIR/$SCANNER_HOME/bin:$PATH"
           sonar-scanner --version
 
       # ============================================
@@ -132,6 +136,11 @@ jobs:
           echo "  Quality Profile: Sonar way (PHP)"
           echo "  Quality Gate: Sonar way"
           echo ""
+          
+          # Set PATH explicitly
+          SCANNER_DIR="${GITHUB_WORKSPACE}/../sonar-scanner"
+          SCANNER_VERSION="5.0.1.3006"
+          export PATH="$SCANNER_DIR/sonar-scanner-${SCANNER_VERSION}-linux/bin:$PATH"
           
           # Run sonar-scanner
           sonar-scanner \
@@ -238,4 +247,3 @@ jobs:
           echo "  6️⃣ DAST (ZAP)"
           echo "  7️⃣ Reporting"
           echo ""
-
