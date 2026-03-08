@@ -1,0 +1,223 @@
+name: "Stage 1: SAST - SonarQube Analysis"
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  sast-sonarqube:
+    name: "SAST: SonarQube Code Analysis"
+    runs-on: self-hosted
+    
+    steps:
+      # ============================================
+      # STEP 1: Checkout Repository
+      # ============================================
+      - name: "Step 1️⃣: Checkout Repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ============================================
+      # STEP 2: Display Project Info
+      # ============================================
+      - name: "Step 2️⃣: Display Project Info"
+        run: |
+          echo "========================================"
+          echo "Project Information"
+          echo "========================================"
+          echo "Repository: ${{ github.repository }}"
+          echo "Branch: ${{ github.ref }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Workspace: $(pwd)"
+          echo ""
+          echo "Project Configuration:"
+          echo "  Project Key: dvwa"
+          echo "  Project Name: DVWA - Damn Vulnerable Web Application"
+          echo "  Language: PHP"
+          echo "  Quality Profile: Sonar way (PHP)"
+          echo "  Quality Gate: Sonar way"
+          echo ""
+          echo "PHP Files in project:"
+          find . -name "*.php" -type f | wc -l
+          echo "files found"
+          echo ""
+
+      # ============================================
+      # STEP 3: Test SonarQube Connectivity
+      # ============================================
+      - name: "Step 3️⃣: Test SonarQube Connectivity"
+        run: |
+          echo "Testing SonarQube Server..."
+          echo "Host: ${{ secrets.SONAR_HOST_URL }}"
+          echo ""
+          
+          if curl -f -s "${{ secrets.SONAR_HOST_URL }}/api/system/status" > /dev/null 2>&1; then
+            echo "✅ SonarQube is REACHABLE"
+            curl -s "${{ secrets.SONAR_HOST_URL }}/api/system/status" | jq '.'
+          else
+            echo "❌ ERROR: Cannot reach SonarQube"
+            exit 1
+          fi
+
+      # ============================================
+      # STEP 4: Download SonarQube Scanner
+      # ============================================
+      - name: "Step 4️⃣: Download & Setup SonarQube Scanner"
+        run: |
+          echo "Downloading SonarQube Scanner..."
+          
+          mkdir -p /tmp/sonar-scanner
+          cd /tmp/sonar-scanner
+          
+          SCANNER_VERSION="5.0.1.3006"
+          SCANNER_FILE="sonar-scanner-cli-${SCANNER_VERSION}-linux.zip"
+          
+          wget -q https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/$SCANNER_FILE
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Downloaded successfully"
+          else
+            echo "❌ Download failed"
+            exit 1
+          fi
+          
+          unzip -q $SCANNER_FILE
+          echo "✅ Extracted successfully"
+          
+          # Add to PATH
+          echo "/tmp/sonar-scanner/sonar-scanner-${SCANNER_VERSION}-linux/bin" >> $GITHUB_PATH
+          
+          # Verify
+          sonar-scanner --version
+
+      # ============================================
+      # STEP 5: Run SonarQube Scan
+      # ============================================
+      - name: "Step 5️⃣: Execute SonarQube Analysis"
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_LOGIN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          echo "========================================"
+          echo "Running SonarQube Analysis"
+          echo "========================================"
+          echo ""
+          echo "Configuration:"
+          echo "  Host: $SONAR_HOST_URL"
+          echo "  Project Key: dvwa"
+          echo "  Project Name: DVWA"
+          echo "  Language: PHP"
+          echo "  Quality Profile: Sonar way (PHP)"
+          echo "  Quality Gate: Sonar way"
+          echo ""
+          
+          # Run sonar-scanner
+          sonar-scanner \
+            -Dsonar.projectKey=dvwa \
+            -Dsonar.projectName="DVWA - Damn Vulnerable Web Application" \
+            -Dsonar.projectVersion=1.0 \
+            -Dsonar.sources=. \
+            -Dsonar.exclusions="**/*test*,**/*Test*,**/tests/**,vendor/**,node_modules/**,docker-stack/**,.github/**,coverage/**,*.min.js,**/*.min.php" \
+            -Dsonar.language=php \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.login=$SONAR_LOGIN \
+            -Dsonar.qualitygate.wait=true
+          
+          echo ""
+          echo "✅ Analysis completed!"
+
+      # ============================================
+      # STEP 6: Check Quality Gate Status
+      # ============================================
+      - name: "Step 6️⃣: Verify Quality Gate"
+        if: always()
+        run: |
+          echo "========================================"
+          echo "Quality Gate Status"
+          echo "========================================"
+          echo ""
+          
+          sleep 3
+          
+          GATE_STATUS=$(curl -s \
+            "${{ secrets.SONAR_HOST_URL }}/api/qualitygates/project_status?projectKey=dvwa" \
+            | jq -r '.projectStatus.status // "NOT_SET"')
+          
+          echo "Gate Status: $GATE_STATUS"
+          echo ""
+          
+          case $GATE_STATUS in
+            OK)
+              echo "✅ Quality Gate PASSED!"
+              ;;
+            ERROR)
+              echo "❌ Quality Gate FAILED!"
+              ;;
+            *)
+              echo "⚠️ Quality Gate Status: $GATE_STATUS"
+              ;;
+          esac
+
+      # ============================================
+      # STEP 7: Display Results
+      # ============================================
+      - name: "Step 7️⃣: Display Analysis Results"
+        if: always()
+        run: |
+          echo ""
+          echo "========================================"
+          echo "📊 SonarQube Analysis Complete!"
+          echo "========================================"
+          echo ""
+          echo "View detailed results:"
+          echo ""
+          echo "Dashboard:"
+          echo "  ${{ secrets.SONAR_HOST_URL }}/dashboard?id=dvwa"
+          echo ""
+          echo "Issues:"
+          echo "  ${{ secrets.SONAR_HOST_URL }}/project/issues?id=dvwa"
+          echo ""
+          echo "Security Hotspots:"
+          echo "  ${{ secrets.SONAR_HOST_URL }}/security_hotspots?id=dvwa"
+          echo ""
+          echo "Code View:"
+          echo "  ${{ secrets.SONAR_HOST_URL }}/code?id=dvwa"
+          echo ""
+
+      # ============================================
+      # STEP 8: Summary
+      # ============================================
+      - name: "Step 8️⃣: Pipeline Summary"
+        if: always()
+        run: |
+          echo ""
+          echo "========================================"
+          echo "✅ SAST Analysis Stage Complete!"
+          echo "========================================"
+          echo ""
+          echo "What was done:"
+          echo "  ✅ Code checked out"
+          echo "  ✅ SonarQube Scanner downloaded"
+          echo "  ✅ Code analyzed using PHP profile"
+          echo "  ✅ Issues identified"
+          echo "  ✅ Quality Gate evaluated"
+          echo ""
+          echo "Project Configuration Used:"
+          echo "  📦 Project Key: dvwa"
+          echo "  📝 Project Name: DVWA"
+          echo "  🔍 Quality Profile: Sonar way (PHP)"
+          echo "  ✔️ Quality Gate: Sonar way"
+          echo ""
+          echo "Next stages in pipeline:"
+          echo "  2️⃣ Dependencies (Snyk)"
+          echo "  3️⃣ Build (Docker)"
+          echo "  4️⃣ Container (Trivy)"
+          echo "  5️⃣ Deploy (DMZ)"
+          echo "  6️��� DAST (ZAP)"
+          echo "  7️⃣ Reporting"
+          echo ""
+
