@@ -1,0 +1,107 @@
+# ============================================
+# WORKFLOW: Stage 3 - Build Docker Image
+# ============================================
+
+name: "Stage 3: Build Docker Image"
+
+on:
+  workflow_run:
+    workflows: ["Stage 2: Dependencies - Snyk Scan"]
+    types: [completed]
+  workflow_dispatch:  # Permet de lancer manuellement
+
+jobs:
+  build-docker:
+    name: "🐳 Build Docker Image"
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      # ─────────────────────────────────────
+      # STEP 1: Checkout du code
+      # ─────────────────────────────────────
+      - name: "Step 1️⃣: Checkout Repository"
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────
+      # STEP 2: Authentifier à Vault
+      # ─────────────────────────────────────
+      - name: "Step 2️⃣: Authenticate to Vault"
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          token: ${{ secrets.VAULT_TOKEN }}
+          method: token
+
+      # ─────────────────────────────────────
+      # STEP 3: Récupérer les credentials Docker
+      # ─────────────────────────────────────
+      - name: "Step 3️⃣: Retrieve Docker Credentials"
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          token: ${{ secrets.VAULT_TOKEN }}
+          secrets: |
+            secret/data/dvwa/registry username | REGISTRY_USER ;
+            secret/data/dvwa/registry password | REGISTRY_PASS ;
+
+      # ─────────────────────────────────────
+      # STEP 4: Setup Docker Buildx
+      # ─────────────────────────────────────
+      - name: "Step 4️⃣: Setup Docker Buildx"
+        uses: docker/setup-buildx-action@v3
+
+      # ─────────────────────────────────────
+      # STEP 5: Login to GitHub Container Registry
+      # ─────────────────────────────────────
+      - name: "Step 5️⃣: Login to GHCR"
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASS }}
+
+      # ─────────────────────────────────────
+      # STEP 6: Extraire les métadonnées Docker
+      # ─────────────────────────────────────
+      - name: "Step 6️⃣: Extract Metadata"
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/dvwa
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # ─────────────────────────────────────
+      # STEP 7: Build et Push de l'image
+      # ─────────────────────────────────────
+      - name: "Step 7️⃣: Build and Push Image"
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ─────────────────────────────────────
+      # STEP 8: Résumé du build
+      # ─────────────────────────────────────
+      - name: "Step 8️⃣: Build Summary"
+        run: |
+          echo "## 🐳 Docker Build Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Image: ghcr.io/${{ github.repository }}/dvwa" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Tags: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Digest: ${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 Voir l'image: https://github.com/${{ github.repository }}/pkgs/container/dvwa" >> $GITHUB_STEP_SUMMARY

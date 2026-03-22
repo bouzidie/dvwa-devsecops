@@ -1,25 +1,36 @@
-FROM docker.io/library/php:8-apache
+# ============================================
+# Dockerfile - DVWA
+# ============================================
 
-LABEL org.opencontainers.image.source=https://github.com/digininja/DVWA
-LABEL org.opencontainers.image.description="DVWA pre-built image."
-LABEL org.opencontainers.image.licenses="gpl-3.0"
+# Image de base PHP + Apache
+FROM php:8.1-apache
 
-WORKDIR /var/www/html
+# Installer les extensions PHP nécessaires
+RUN apt-get update && apt-get install -y \
+    libpng-dev \
+    libjpeg-dev \
+    libfreetype6-dev \
+    zip \
+    unzip \
+    git \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg \
+    && docker-php-ext-install gd mysqli pdo pdo_mysql \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# https://www.php.net/manual/en/image.installation.php
-RUN apt-get update \
- && export DEBIAN_FRONTEND=noninteractive \
- && apt-get install -y zlib1g-dev libpng-dev libjpeg-dev libfreetype6-dev iputils-ping git \
- && apt-get clean -y && rm -rf /var/lib/apt/lists/* \
- && docker-php-ext-configure gd --with-jpeg --with-freetype \
- && a2enmod rewrite \
- # Use pdo_sqlite instead of pdo_mysql if you want to use sqlite
- && docker-php-ext-install gd mysqli pdo pdo_mysql
+# Copier le code DVWA
+COPY . /var/www/html/
 
-COPY --from=composer:latest /usr/bin/composer /usr/local/bin/composer
-COPY --chown=www-data:www-data . .
-COPY --chown=www-data:www-data config/config.inc.php.dist config/config.inc.php
+# Configuration Apache pour permettre .htaccess
+RUN a2enmod rewrite && \
+    sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
 
-# This is configuring the stuff for the API
-RUN cd /var/www/html/vulnerabilities/api \
- && composer install \
+# Health check pour vérifier que l'app est prête
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost/ || exit 1
+
+# Exposer le port 80
+EXPOSE 80
+
+# Démarrer Apache en foreground
+CMD ["apache2-foreground"]
