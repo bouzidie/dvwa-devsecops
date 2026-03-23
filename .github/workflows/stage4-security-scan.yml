@@ -37,7 +37,7 @@ jobs:
       - name: "Step 2️⃣: Get GHCR Credentials from Vault"
         uses: hashicorp/vault-action@v2
         with:
-          url: ${{ secrets.VAULT_ADDR2 }}
+          url: ${{ secrets.VAULT_ADDR }}
           token: ${{ secrets.VAULT_TOKEN }}
           method: token
           secrets: |
