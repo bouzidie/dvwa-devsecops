@@ -1,5 +1,3 @@
-# .github/workflows/stage4-security-scan.yml
-
 name: "Stage 4: Security Scan - Trivy"
 
 on:
@@ -7,6 +5,11 @@ on:
     workflows: ["Stage 3: Build Docker Image"]
     types: [completed]
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to scan'
+        required: false
+        default: 'latest'
 
 permissions:
   contents: read
@@ -22,22 +25,15 @@ jobs:
       - name: "Step 1️⃣: Checkout"
         uses: actions/checkout@v4
 
-      # 🔐 OPTION A: Vault (commenté pour debug)
-      # - name: "Step 2️⃣: Get Credentials from Vault"
-      #   uses: hashicorp/vault-action@v2
-      #   with:
-      #     url: ${{ secrets.VAULT_ADDR2 }}
-      #     token: ${{ secrets.VAULT_TOKEN2 }}
-      #     method: token
-      #     exportEnv: true
-      #     tlsSkipVerify: true
-      #     secrets: |
-      #       secret/data/dvwa/registry username | GHCR_USERNAME ;
-      #       secret/data/dvwa/registry password | GHCR_TOKEN ;
-
-      # ✅ OPTION B: Secrets GitHub Direct (TEMPORAIRE)
-      - name: "Step 2️⃣: Get GHCR Credentials (Direct)"
+      # 🔐 Récupérer credentials depuis GitHub Secrets (bypass Vault pour debug)
+      - name: "Step 2️⃣: Get GHCR Credentials"
         run: |
+          # Vérifier que les secrets existent
+          if [ -z "${{ secrets.GHCR_USERNAME }}" ] || [ -z "${{ secrets.GHCR_TOKEN }}" ]; then
+            echo "❌ ERREUR: GHCR_USERNAME ou GHCR_TOKEN non définis dans GitHub Secrets!"
+            exit 1
+          fi
+          # Exporter en variables d'environnement pour les steps suivants
           echo "GHCR_USERNAME=${{ secrets.GHCR_USERNAME }}" >> $GITHUB_ENV
           echo "GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}" >> $GITHUB_ENV
 
@@ -51,11 +47,14 @@ jobs:
       - name: "Step 4️⃣: Pull Image"
         run: |
           IMAGE="ghcr.io/${{ github.repository_owner }}/dvwa-devsecops:latest"
+          echo "📥 Pulling: $IMAGE"
           docker pull $IMAGE
           echo "IMAGE_NAME=$IMAGE" >> $GITHUB_ENV
 
       - name: "Step 5️⃣: Run Trivy Scanner"
+        id: trivy
         run: |
+          echo "🔍 Starting Trivy scan..."
           trivy image \
             --format sarif \
             --output trivy-results.sarif \
@@ -65,11 +64,29 @@ jobs:
             --scanners vuln,secret,config \
             --timeout 15m \
             ${{ env.IMAGE_NAME }}
+          
+          # Vérifier que le fichier SARIF a été créé
+          if [ -f trivy-results.sarif ] && [ -s trivy-results.sarif ]; then
+            echo "✅ SARIF generated"
+            echo "sarif_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ SARIF missing or empty"
+            echo "sarif_exists=false" >> $GITHUB_OUTPUT
+          fi
         continue-on-error: true
 
       - name: "Step 6️⃣: Upload to GitHub Security"
         uses: github/codeql-action/upload-sarif@v4
-        if: always()
+        if: steps.trivy.outputs.sarif_exists == 'true'
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-security-scan'
+
+      - name: "Step 7️⃣: Upload Reports as Artifact"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-security-report
+          path: |
+            trivy-results.sarif
+          retention-days: 7
