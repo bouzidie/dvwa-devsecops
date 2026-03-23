@@ -1,6 +1,4 @@
-# ============================================
-# WORKFLOW: Stage 4 - Security Scan with Trivy (ROBUSTE)
-# ============================================
+# .github/workflows/stage4-security-scan.yml
 
 name: "Stage 4: Security Scan - Trivy"
 
@@ -9,41 +7,39 @@ on:
     workflows: ["Stage 3: Build Docker Image"]
     types: [completed]
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: 'Image tag to scan'
-        required: false
-        default: 'latest'
 
 permissions:
   contents: read
   security-events: write
-  actions: read
-  packages: read  # ← Pour pull depuis GHCR
+  packages: read
 
 jobs:
   trivy-scan:
     name: "🛡️ Trivy Security Scan"
     runs-on: self-hosted
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     
     steps:
-      - name: "Step 1️⃣: Checkout Repository"
+      - name: "Step 1️⃣: Checkout"
         uses: actions/checkout@v4
 
-      # ─────────────────────────────────────
-      # Récupérer credentials Vault (pour GHCR privé)
-      # ─────────────────────────────────────
-      - name: "Step 2️⃣: Get GHCR Credentials from Vault"
-        uses: hashicorp/vault-action@v2
-        with:
-          url: ${{ secrets.VAULT_ADDR2 }}
-          token: ${{ secrets.VAULT_TOKEN }}
-          method: token
-          secrets: |
-            secret/data/dvwa/registry username | GHCR_USERNAME ;
-            secret/data/dvwa/registry password | GHCR_TOKEN ;
-          exportEnv: true
+      # 🔐 OPTION A: Vault (commenté pour debug)
+      # - name: "Step 2️⃣: Get Credentials from Vault"
+      #   uses: hashicorp/vault-action@v2
+      #   with:
+      #     url: ${{ secrets.VAULT_ADDR2 }}
+      #     token: ${{ secrets.VAULT_TOKEN2 }}
+      #     method: token
+      #     exportEnv: true
+      #     tlsSkipVerify: true
+      #     secrets: |
+      #       secret/data/dvwa/registry username | GHCR_USERNAME ;
+      #       secret/data/dvwa/registry password | GHCR_TOKEN ;
+
+      # ✅ OPTION B: Secrets GitHub Direct (TEMPORAIRE)
+      - name: "Step 2️⃣: Get GHCR Credentials (Direct)"
+        run: |
+          echo "GHCR_USERNAME=${{ secrets.GHCR_USERNAME }}" >> $GITHUB_ENV
+          echo "GHCR_TOKEN=${{ secrets.GHCR_TOKEN }}" >> $GITHUB_ENV
 
       - name: "Step 3️⃣: Login to GHCR"
         uses: docker/login-action@v3
@@ -52,38 +48,14 @@ jobs:
           username: ${{ env.GHCR_USERNAME }}
           password: ${{ env.GHCR_TOKEN }}
 
-      - name: "Step 4️⃣: Set Image Reference"
-        id: image_ref
+      - name: "Step 4️⃣: Pull Image"
         run: |
-          TAG="${{ github.event.inputs.image_tag || 'latest' }}"
-          IMAGE="ghcr.io/${{ github.repository_owner }}/dvwa-devsecops:${TAG}"
-          echo "image=$IMAGE" >> $GITHUB_OUTPUT
-          echo "🎯 Scanning: $IMAGE"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/dvwa-devsecops:latest"
+          docker pull $IMAGE
+          echo "IMAGE_NAME=$IMAGE" >> $GITHUB_ENV
 
-      # ─────────────────────────────────────
-      # Pull avec fallback si échec
-      # ─────────────────────────────────────
-      - name: "Step 5️⃣: Pull Docker Image"
+      - name: "Step 5️⃣: Run Trivy Scanner"
         run: |
-          echo "📥 Attempting to pull: ${{ steps.image_ref.outputs.image }}"
-          docker pull ${{ steps.image_ref.outputs.image }} || {
-            echo "⚠️ Pull failed, checking local cache..."
-            if docker images ${{ steps.image_ref.outputs.image }} --format "{{.Repository}}:{{.Tag}}" | grep -q .; then
-              echo "✅ Using locally cached image"
-            else
-              echo "❌ Image not available locally or remotely"
-              exit 1
-            fi
-          }
-
-      # ─────────────────────────────────────
-      # Scan Trivy avec gestion d'erreur
-      # ─────────────────────────────────────
-      - name: "Step 6️⃣: Run Trivy Scanner"
-        id: trivy
-        run: |
-          echo "🔍 Starting Trivy scan on ${{ steps.image_ref.outputs.image }}"
-          
           trivy image \
             --format sarif \
             --output trivy-results.sarif \
@@ -92,68 +64,12 @@ jobs:
             --vuln-type os,library \
             --scanners vuln,secret,config \
             --timeout 15m \
-            ${{ steps.image_ref.outputs.image }}
-          
-          # Vérifier si le fichier SARIF a été créé
-          if [ -f trivy-results.sarif ] && [ -s trivy-results.sarif ]; then
-            echo "✅ SARIF report generated successfully"
-            echo "sarif_exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "⚠️ SARIF file missing or empty"
-            echo "sarif_exists=false" >> $GITHUB_OUTPUT
-          fi
-        continue-on-error: true  # Ne pas bloquer le workflow si Trivy échoue
+            ${{ env.IMAGE_NAME }}
+        continue-on-error: true
 
-      # ─────────────────────────────────────
-      # Upload SARIF (seulement si fichier existe)
-      # ─────────────────────────────────────
-      - name: "Step 7️⃣: Upload to GitHub Security"
-        uses: github/codeql-action/upload-sarif@v4  # ✅ Mise à jour v4
-        if: steps.trivy.outputs.sarif_exists == 'true'
+      - name: "Step 6️⃣: Upload to GitHub Security"
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
         with:
           sarif_file: 'trivy-results.sarif'
           category: 'trivy-security-scan'
-
-      # ─────────────────────────────────────
-      # Rapport HTML (optionnel)
-      # ─────────────────────────────────────
-      - name: "Step 8️⃣: Generate HTML Report"
-        if: steps.trivy.outputs.sarif_exists == 'true'
-        run: |
-          trivy image \
-            --format html \
-            --output trivy-report.html \
-            ${{ steps.image_ref.outputs.image }}
-        continue-on-error: true
-
-      - name: "Step 9️⃣: Upload Reports"
-        uses: actions/upload-artifact@v4
-        if: steps.trivy.outputs.sarif_exists == 'true'
-        with:
-          name: trivy-security-report
-          path: |
-            trivy-results.sarif
-            trivy-report.html
-          retention-days: 14
-
-      # ─────────────────────────────────────
-      # Résumé même en cas d'échec
-      # ─────────────────────────────────────
-      - name: "Step 🔟: Scan Summary"
-        if: always()
-        run: |
-          echo "## 🛡️ Security Scan Summary" >> $GITHUB_STEP_SUMMARY
-          echo "📦 Image: ${{ steps.image_ref.outputs.image }}" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.trivy.outputs.sarif_exists }}" == "true" ] && [ -f trivy-results.sarif ]; then
-            echo "✅ Scan completed successfully" >> $GITHUB_STEP_SUMMARY
-            CRITICAL=$(grep -c '"CRITICAL"' trivy-results.sarif 2>/dev/null || echo "0")
-            HIGH=$(grep -c '"HIGH"' trivy-results.sarif 2>/dev/null || echo "0")
-            MEDIUM=$(grep -c '"MEDIUM"' trivy-results.sarif 2>/dev/null || echo "0")
-            echo "🔴 CRITICAL: $CRITICAL | 🟠 HIGH: $HIGH | 🟡 MEDIUM: $MEDIUM" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ Scan failed or SARIF not generated" >> $GITHUB_STEP_SUMMARY
-            echo "🔍 Vérifiez les logs du step 'Run Trivy Scanner'" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "🔗 GitHub Security: https://github.com/${{ github.repository }}/security" >> $GITHUB_STEP_SUMMARY
