@@ -1,5 +1,5 @@
 # ============================================
-# WORKFLOW: Stage 3 - Build Docker Image new
+# WORKFLOW: Stage 3 - Build Docker Image 
 # ============================================
 
 name: "Stage 3: Build Docker Image"
@@ -10,15 +10,17 @@ on:
     types: [completed]
   workflow_dispatch:  # Permet de lancer manuellement
 
+# ✅ AJOUT: Permissions explicites pour GHCR
+permissions:
+  contents: read
+  packages: write  # ← ESSENTIEL pour push sur ghcr.io
+  actions: read    # Pour lire le statut du workflow parent
+
 jobs:
   build-docker:
     name: "🐳 Build Docker Image"
     runs-on: self-hosted
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    
-    permissions:
-      contents: read
-      packages: write
     
     steps:
       # ─────────────────────────────────────
@@ -28,37 +30,31 @@ jobs:
         uses: actions/checkout@v4
 
       # ─────────────────────────────────────
-      # STEP 2: Authentifier à Vault
+      # STEP 2: Authentifier à Vault ET récupérer les secrets (COMBINÉ)
       # ─────────────────────────────────────
-      - name: "Step 2️⃣: Authenticate to Vault"
+      - name: "Step 2️⃣: Authenticate to Vault & Retrieve Credentials"
         uses: hashicorp/vault-action@v2
         with:
           url: ${{ secrets.VAULT_ADDR }}
           token: ${{ secrets.VAULT_TOKEN }}
           method: token
-
-      # ─────────────────────────────────────
-      # STEP 3: Récupérer les credentials Docker
-      # ─────────────────────────────────────
-      - name: "Step 3️⃣: Retrieve Docker Credentials"
-        uses: hashicorp/vault-action@v2
-        with:
-          url: ${{ secrets.VAULT_ADDR }}
-          token: ${{ secrets.VAULT_TOKEN }}
+          # ✅ Récupérer tous les secrets en une seule appel
           secrets: |
             secret/data/dvwa/registry username | REGISTRY_USER ;
             secret/data/dvwa/registry password | REGISTRY_PASS ;
+          # ✅ Exporter en variables d'environnement pour les étapes suivantes
+          exportEnv: true
 
       # ─────────────────────────────────────
-      # STEP 4: Setup Docker Buildx
+      # STEP 3: Setup Docker Buildx
       # ─────────────────────────────────────
-      - name: "Step 4️⃣: Setup Docker Buildx"
+      - name: "Step 3️⃣: Setup Docker Buildx"
         uses: docker/setup-buildx-action@v3
 
       # ─────────────────────────────────────
-      # STEP 5: Login to GitHub Container Registry
+      # STEP 4: Login to GitHub Container Registry
       # ─────────────────────────────────────
-      - name: "Step 5️⃣: Login to GHCR"
+      - name: "Step 4️⃣: Login to GHCR"
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -66,22 +62,23 @@ jobs:
           password: ${{ env.REGISTRY_PASS }}
 
       # ─────────────────────────────────────
-      # STEP 6: Extraire les métadonnées Docker
+      # STEP 5: Extraire les métadonnées Docker
       # ─────────────────────────────────────
-      - name: "Step 6️⃣: Extract Metadata"
+      - name: "Step 5️⃣: Extract Metadata"
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}/dvwa
+          # ✅ Format simplifié et cohérent
+          images: ghcr.io/${{ github.repository_owner }}/dvwa-devsecops
           tags: |
             type=ref,event=branch
             type=sha,prefix=sha-
             type=raw,value=latest,enable={{is_default_branch}}
 
       # ─────────────────────────────────────
-      # STEP 7: Build et Push de l'image
+      # STEP 6: Build et Push de l'image
       # ─────────────────────────────────────
-      - name: "Step 7️⃣: Build and Push Image"
+      - name: "Step 6️⃣: Build and Push Image"
         id: build
         uses: docker/build-push-action@v5
         with:
@@ -90,18 +87,46 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # ✅ Cache GitHub Actions (nécessite actions/cache@v4 en amont si problèmes)
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # ✅ Options de sécurité pour BuildKit
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
 
       # ─────────────────────────────────────
-      # STEP 8: Résumé du build
+      # STEP 7: Résumé du build
       # ─────────────────────────────────────
-      - name: "Step 8️⃣: Build Summary"
+      - name: "Step 7️⃣: Build Summary"
         run: |
           echo "## 🐳 Docker Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Image: ghcr.io/${{ github.repository }}/dvwa" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Image: ghcr.io/${{ github.repository_owner }}/dvwa-devsecops" >> $GITHUB_STEP_SUMMARY
           echo "✅ Tags: ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
           echo "✅ Digest: ${{ steps.build.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔗 Voir l'image: https://github.com/${{ github.repository }}/pkgs/container/dvwa" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 Voir l'image: https://github.com/${{ github.repository_owner }}/pkgs/container/dvwa-devsecops" >> $GITHUB_STEP_SUMMARY
+
+      # ─────────────────────────────────────
+      # STEP 8: 🛡️ Scan de sécurité post-build (OPTIONNEL MAIS RECOMMANDÉ)
+      # ─────────────────────────────────────
+      - name: "Step 8️⃣: Security Scan with Trivy"
+        uses: aquasecurity/trivy-action@master
+        if: always()  # S'exécute même si le build échoue partiellement
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/dvwa-devsecops:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '0'  # Ne pas faire échouer le pipeline, juste alerter
+          severity: 'CRITICAL,HIGH'
+
+      # ─────────────────────────────────────
+      # STEP 9: Upload des résultats de sécurité
+      # ─────────────────────────────────────
+      - name: "Step 9️⃣: Upload Security Report"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-scan-results
+          path: trivy-results.sarif
+          retention-days: 7
