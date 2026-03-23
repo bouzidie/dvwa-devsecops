@@ -16,3 +16,7 @@ tests/__pycache__/
 hackable/uploads/*
 .DS_Store
 .DS_Store
+devsecops-stack/
+dockerfile
+stage4Vault-security-scan.yml
+vault-keys.json
