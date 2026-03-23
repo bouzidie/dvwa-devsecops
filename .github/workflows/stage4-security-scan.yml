@@ -1,0 +1,103 @@
+# ============================================
+# WORKFLOW: Stage 4 - Security Scan with Trivy (NATIVE)
+# ============================================
+
+name: "Stage 4: Security Scan - Trivy"
+
+on:
+  workflow_run:
+    workflows: ["Stage 3: Build Docker Image"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to scan (e.g., latest, main, sha-abc123)'
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  trivy-scan:
+    name: "🛡️ Trivy Security Scan"
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: "Step 1️⃣: Checkout Repository"
+        uses: actions/checkout@v4
+
+      - name: "Step 2️⃣: Login to GHCR"
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Step 3️⃣: Set Image Tag"
+        id: image_tag
+        run: |
+          TAG="${{ github.event.inputs.image_tag || 'latest' }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: "Step 4️⃣: Pull Docker Image"
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/dvwa-devsecops:${{ steps.image_tag.outputs.tag }}"
+          docker pull $IMAGE
+          echo "IMAGE_NAME=$IMAGE" >> $GITHUB_ENV
+
+      # ✅ UTILISATION DE TRIVY NATIF (pas de Docker)
+      - name: "Step 5️⃣: Run Trivy Vulnerability Scanner"
+        run: |
+          trivy image \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity CRITICAL,HIGH,MEDIUM \
+            --exit-code 0 \
+            --vuln-type os,library \
+            --scanners vuln,secret,config \
+            --timeout 10m \
+            ${{ env.IMAGE_NAME }}
+        continue-on-error: false
+
+      - name: "Step 6️⃣: Upload to GitHub Security"
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy-security-scan'
+
+      - name: "Step 7️⃣: Generate HTML Report"
+        if: always()
+        run: |
+          trivy image \
+            --format html \
+            --output trivy-report.html \
+            ${{ env.IMAGE_NAME }}
+        continue-on-error: true
+
+      - name: "Step 8️⃣: Upload Reports"
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-security-report
+          path: |
+            trivy-results.sarif
+            trivy-report.html
+          retention-days: 14
+
+      - name: "Step 9️⃣: Scan Summary"
+        if: always()
+        run: |
+          echo "## 🛡️ Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "📦 Image: ${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 Scanner: Trivy (native install)" >> $GITHUB_STEP_SUMMARY
+          if [ -f trivy-results.sarif ]; then
+            CRITICAL=$(grep -c '"CRITICAL"' trivy-results.sarif || echo "0")
+            HIGH=$(grep -c '"HIGH"' trivy-results.sarif || echo "0")
+            MEDIUM=$(grep -c '"MEDIUM"' trivy-results.sarif || echo "0")
+            echo "🔴 CRITICAL: $CRITICAL | 🟠 HIGH: $HIGH | 🟡 MEDIUM: $MEDIUM" >> $GITHUB_STEP_SUMMARY
+          fi
