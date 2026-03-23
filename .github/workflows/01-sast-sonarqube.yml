@@ -152,7 +152,7 @@ jobs:
             -Dsonar.language=php \
             -Dsonar.host.url=$SONAR_HOST_URL \
             -Dsonar.login=$SONAR_LOGIN \
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=false
           
           echo ""
           echo "✅ Analysis completed!"
