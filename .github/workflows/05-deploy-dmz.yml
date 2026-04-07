@@ -30,7 +30,7 @@ jobs:
         uses: hashicorp/vault-action@v2
         with:
           url: ${{ secrets.VAULT_ADDR2 }}
-          token: ${{ secrets.VAULT_TOKEN2 }}
+          token: ${{ secrets.VAULT_TOKEN }}
           method: token
           exportEnv: true
           tlsSkipVerify: true
@@ -123,3 +123,5 @@ jobs:
           echo "🌐 URL: http://$DMZ_HOST:80" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "🔍 Next: OWASP ZAP DAST Scan" >> $GITHUB_STEP_SUMMARY
+
+
