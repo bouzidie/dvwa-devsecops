@@ -1,5 +1,5 @@
 # ============================================
-# WORKFLOW: Stage 5 - Deploy to DMZ (DEBUG)
+# WORKFLOW: Stage 5 - Deploy to DMZ (DEBUG ULTIME)
 # ============================================
 
 name: "Stage 5: Deploy to DMZ"
@@ -24,72 +24,78 @@ jobs:
         uses: actions/checkout@v4
 
       # ─────────────────────────────────────
-      # STEP 2: DIAGNOSTIC VAULT
+      # STEP 2: DEBUG ULTIME - Explorer Vault
       # ─────────────────────────────────────
-      - name: "Step 2️⃣: DEBUG Vault Connection"
+      - name: "Step 2️⃣: ULTIMATE Vault Debug"
         run: |
-          echo "=== 🕵️♂️ DÉBUT DU DIAGNOSTIC VAULT ==="
+          echo "=== 🔍 ULTIMATE VAULT DEBUG ==="
+          echo ""
           
-          # 1. Vérifier que les secrets GitHub existent
-          echo "1. Vérification des Secrets GitHub :"
-          if [ -z "${{ secrets.VAULT_ADDR2 }}" ]; then echo "❌ VAULT_ADDR2 est VIDE"; else echo "✅ VAULT_ADDR2 est défini"; fi
-          if [ -z "${{ secrets.VAULT_TOKEN2 }}" ]; then echo "❌ VAULT_TOKEN2 est VIDE"; else echo "✅ VAULT_TOKEN2 est défini"; fi
+          # Variables
+          VAULT_ADDR="${{ secrets.VAULT_ADDR2 }}"
+          VAULT_TOKEN="${{ secrets.VAULT_TOKEN2 }}"
           
-          # 2. Installer jq si manquant
-          which jq || (echo "Installation de jq..." && sudo apt-get update && sudo apt-get install -y jq)
+          echo "📍 Vault Address: $VAULT_ADDR"
+          echo "🔑 Token (first 10 chars): ${VAULT_TOKEN:0:10}..."
+          echo ""
           
-          # 3. Tester la connectivité vers Vault
-          echo "2. Test de connectivité vers : ${{ secrets.VAULT_ADDR2 }}"
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.VAULT_ADDR2 }}/v1/sys/health")
-          echo "Code HTTP Santé Vault : $HTTP_CODE"
+          # 1. Health check
+          echo "1️⃣ Health Check:"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/sys/health" | jq .
+          echo ""
           
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "❌ ÉCHEC : Impossible de contacter Vault."
-            echo "💡 SOLUTION : Vérifiez que VAULT_ADDR2 utilise l'IP LAN (ex: http://192.168.40.100:8200) et non 127.0.0.1"
-          fi
+          # 2. Token lookup (voir les policies)
+          echo "2️⃣ Token Info (policies):"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/auth/token/lookup-self" | jq '.data.policies'
+          echo ""
           
-          # 4. Tenter de lire le secret
-          echo "3. Tentative de lecture du secret..."
-          RESPONSE=$(curl -s -H "X-Vault-Token: ${{ secrets.VAULT_TOKEN2 }}" "${{ secrets.VAULT_ADDR2 }}/v1/secret/data/devsecops/remediation")
-          echo "Réponse brute (masquée partiellement) : ${RESPONSE:0:100}..."
+          # 3. Lister le contenu de secret/
+          echo "3️⃣ Listing secret/ (KV v2 list API):"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/?list=true" | jq .
+          echo ""
           
-          # Extraire un champ test
-          DMZ_HOST=$(echo "$RESPONSE" | jq -r '.data.data.dmz_host // empty')
+          # 4. Tenter différents chemins pour le secret
+          echo "4️⃣ Testing different paths for remediation secret:"
           
-          if [ -z "$DMZ_HOST" ]; then
-            echo "❌ ÉCHEC : Le secret n'a pas pu être lu ou est vide."
-            echo "💡 VÉRIFIEZ : Le Token est-il correct ? Le chemin 'secret/data/...' est-il bon ?"
-            # On ne fait pas exit 1 ici pour voir la suite, mais le job échouera plus loin
-          else
-            echo "✅ SUCCÈS : Secret lu ! DMZ_HOST = $DMZ_HOST"
-          fi
+          echo "   a) secret/data/devsecops/remediation (KV v2 standard):"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/devsecops/remediation" | jq '{errors: .errors, has_data: (.data.data != null)}'
           
-          echo "=== 🕵️‍♂️ FIN DU DIAGNOSTIC ==="
+          echo "   b) secret/devsecops/remediation (KV v1 style):"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/devsecops/remediation" | jq '{errors: .errors, has_data: (.data != null)}'
+          
+          echo "   c) secret/data/remediation (sans sous-dossier):"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/remediation" | jq '{errors: .errors, has_data: (.data.data != null)}'
+          echo ""
+          
+          # 5. Vérifier les secrets registry aussi
+          echo "5️⃣ Testing registry secret:"
+          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/devsecops/registry" | jq '{errors: .errors, has_data: (.data.data != null)}'
+          echo ""
+          
+          # 6. Résumé
+          echo "=== 📊 RÉSUMÉ ==="
+          echo "Si vous voyez 'has_data: true' pour un chemin → utilisez ce chemin dans le workflow"
+          echo "Si toutes les réponses ont 'errors: []' → le token n'a pas accès ou les secrets n'existent pas"
+          echo ""
+          echo "💡 Pour corriger :"
+          echo "   1. Vérifiez que les secrets existent : vault kv list secret/data/devsecops/"
+          echo "   2. Vérifiez les policies du token : vault token lookup myroot"
+          echo "   3. Si besoin, recréez les secrets avec le bon chemin"
         shell: bash
 
       # ─────────────────────────────────────
-      # STEP 3: Configurer SSH
+      # STEPS 3-6: Désactivés pour le debug
       # ─────────────────────────────────────
-      - name: "Step 3️⃣: Setup SSH Key"
-        run: |
-          # Note: Ce step échouera car les variables ne sont pas exportées dans le mode DEBUG
-          echo "⚠️ Ce step est désactivé en mode DEBUG."
-        shell: bash
-
-      # ─────────────────────────────────────
-      # STEP 4: Déployer sur DMZ
-      # ─────────────────────────────────────
-      - name: "Step 4️⃣: Deploy Application"
-        run: echo "⚠️ Déploiement désactivé en mode DEBUG."
-
-      # ─────────────────────────────────────
-      # STEP 5: Vérifier
-      # ─────────────────────────────────────
-      - name: "Step 5️⃣: Verify"
-        run: echo "⚠️ Vérification désactivée en mode DEBUG."
-
-      # ─────────────────────────────────────
-      # STEP 6: Résumé
-      # ─────────────────────────────────────
+      - name: "Step 3️⃣: Setup SSH (disabled)"
+        run: echo "⏸️ Disabled for debug"
+      
+      - name: "Step 4️⃣: Deploy (disabled)"
+        run: echo "⏸️ Disabled for debug"
+      
+      - name: "Step 5️⃣: Verify (disabled)"
+        run: echo "⏸️ Disabled for debug"
+      
       - name: "Step 6️⃣: Summary"
-        run: echo "Diagnostic terminé."
+        run: |
+          echo "## 🔍 Debug Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Voir les logs du Step 2 pour le diagnostic." >> $GITHUB_STEP_SUMMARY
