@@ -1,0 +1,224 @@
+# ============================================
+# WORKFLOW: Stage 6 - OWASP ZAP DAST Scan
+# ============================================
+
+name: "Stage 6: OWASP ZAP DAST Scan"
+
+on:
+  workflow_run:
+    workflows: ["Stage 5: Deploy to DMZ"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  zap-scan:
+    name: "🕷️ OWASP ZAP Security Scan"
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      # ─────────────────────────────────────
+      # STEP 1: Checkout Repository
+      # ─────────────────────────────────────
+      - name: "Step 1️⃣: Checkout Repository"
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────
+      # STEP 2: Récupérer l'URL cible depuis Vault
+      # ─────────────────────────────────────
+      - name: "Step 2️⃣: Get DVWA URL from Vault"
+        run: |
+          export VAULT_ADDR="${{ secrets.VAULT_ADDR2 }}"
+          export VAULT_TOKEN="${{ secrets.VAULT_TOKEN2 }}"
+          
+          # Fonction pour lire un secret
+          get_secret() {
+            vault kv get -format=json "$1" 2>/dev/null | jq -r ".data.data.$2 // empty"
+          }
+          
+          # Récupérer l'hôte DMZ
+          DMZ_HOST=$(get_secret "secret/data/devsecops/remediation" "dmz_host")
+          
+          # Exporter pour les autres steps
+          echo "DVWA_URL=http://$DMZ_HOST:80" >> $GITHUB_ENV
+          echo "DMZ_HOST=$DMZ_HOST" >> $GITHUB_ENV
+          
+          echo "🎯 Target URL: http://$DMZ_HOST:80"
+        shell: bash
+
+      # ─────────────────────────────────────
+      # STEP 3: Attendre que DVWA soit prêt
+      # ─────────────────────────────────────
+      - name: "Step 3️⃣: Wait for DVWA to be Ready"
+        run: |
+          echo "⏳ Waiting for DVWA to be ready..."
+          
+          max_attempts=30
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -sf --max-time 5 $DVWA_URL > /dev/null 2>&1; then
+              echo "✅ DVWA is ready!"
+              break
+            fi
+            
+            attempt=$((attempt + 1))
+            echo "⏱️  Attempt $attempt/$max_attempts - Waiting 10s..."
+            sleep 10
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "❌ DVWA is not responding after $max_attempts attempts"
+            exit 1
+          fi
+        shell: bash
+
+      # ─────────────────────────────────────
+      # STEP 4: OWASP ZAP Baseline Scan
+      # ─────────────────────────────────────
+      - name: "Step 4️⃣: OWASP ZAP Baseline Scan"
+        run: |
+          echo "🕷️ Starting OWASP ZAP Baseline Scan..."
+          echo "🎯 Target: $DVWA_URL"
+          
+          # Créer le dossier pour les rapports
+          mkdir -p zap-reports
+          
+          # Lancer ZAP en mode baseline
+          docker run --rm \
+            -v $(pwd)/zap-reports:/zap/wrk/:rw \
+            -t owasp/zap2docker-stable \
+            zap-baseline.py \
+            -t $DVWA_URL \
+            -r zap_report.html \
+            -J zap_report.json \
+            -x zap_report.xml \
+            -I \
+            -a \
+            --auto
+          
+          echo "✅ ZAP Baseline Scan completed"
+        shell: bash
+
+      # ─────────────────────────────────────
+      # STEP 5: Full Scan (Optionnel - Plus complet mais plus long)
+      # ─────────────────────────────────────
+      - name: "Step 5️⃣: OWASP ZAP Full Scan (Optional)"
+        run: |
+          echo "🕷️ Starting OWASP ZAP Full Scan (this may take 10-15 minutes)..."
+          
+          # Créer le dossier pour les rapports complets
+          mkdir -p zap-reports-full
+          
+          # Lancer ZAP en mode full scan (plus lent mais plus complet)
+          docker run --rm \
+            -v $(pwd)/zap-reports-full:/zap/wrk/:rw \
+            -t owasp/zap2docker-stable \
+            zap-full-scan.py \
+            -t $DVWA_URL \
+            -r zap_full_report.html \
+            -J zap_full_report.json \
+            -x zap_full_report.xml \
+            -a \
+            --auto || true  # Continue même si des vulnérabilités sont trouvées
+          
+          echo "✅ ZAP Full Scan completed"
+        continue-on-error: true
+        shell: bash
+
+      # ─────────────────────────────────────
+      # STEP 6: Afficher le résumé des vulnérabilités
+      # ─────────────────────────────────────
+      - name: "Step 6️⃣: Vulnerability Summary"
+        run: |
+          echo "📊 OWASP ZAP Scan Results"
+          echo "========================="
+          echo ""
+          
+          if [ -f zap-reports/zap_report.json ]; then
+            echo "📁 Baseline Scan Results:"
+            echo ""
+            
+            # Compter les alertes par niveau de risque
+            HIGH=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' 2>/dev/null || echo "0")
+            MEDIUM=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' 2>/dev/null || echo "0")
+            LOW=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="1")] | length' 2>/dev/null || echo "0")
+            INFO=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="0")] | length' 2>/dev/null || echo "0")
+            
+            echo "🔴 High Risk: $HIGH"
+            echo "🟠 Medium Risk: $MEDIUM"
+            echo "🟡 Low Risk: $LOW"
+            echo "🔵 Informational: $INFO"
+            echo ""
+            
+            # Afficher les vulnérabilités HIGH
+            if [ "$HIGH" -gt 0 ]; then
+              echo "⚠️  HIGH RISK VULNERABILITIES:"
+              cat zap-reports/zap_report.json | jq -r '.site[]?.alerts[]? | select(.riskcode=="3") | "  • \(.alert)"' 2>/dev/null || true
+              echo ""
+            fi
+            
+            # Afficher les vulnérabilités MEDIUM
+            if [ "$MEDIUM" -gt 0 ]; then
+              echo "⚠️  MEDIUM RISK VULNERABILITIES:"
+              cat zap-reports/zap_report.json | jq -r '.site[]?.alerts[]? | select(.riskcode=="2") | "  • \(.alert)"' 2>/dev/null || true
+              echo ""
+            fi
+          else
+            echo "❌ No report found"
+          fi
+        shell: bash
+
+      # ─────────────────────────────────────
+      # STEP 7: Upload des rapports comme artifacts
+      # ─────────────────────────────────────
+      - name: "Step 7️⃣: Upload ZAP Reports"
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-security-reports
+          path: |
+            zap-reports/*.html
+            zap-reports/*.json
+            zap-reports/*.xml
+            zap-reports-full/*.html
+            zap-reports-full/*.json
+            zap-reports-full/*.xml
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ─────────────────────────────────────
+      # STEP 8: Créer un résumé dans GitHub
+      # ─────────────────────────────────────
+      - name: "Step 8️⃣: Create Summary"
+        run: |
+          echo "## 🕷️ OWASP ZAP Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🎯 **Target**: $DVWA_URL" >> $GITHUB_STEP_SUMMARY
+          echo "📅 **Date**: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f zap-reports/zap_report.json ]; then
+            HIGH=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' 2>/dev/null || echo "0")
+            MEDIUM=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' 2>/dev/null || echo "0")
+            LOW=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="1")] | length' 2>/dev/null || echo "0")
+            
+            echo "### 📊 Results" >> $GITHUB_STEP_SUMMARY
+            echo "- 🔴 High Risk: $HIGH" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟠 Medium Risk: $MEDIUM" >> $GITHUB_STEP_SUMMARY
+            echo "- 🟡 Low Risk: $LOW" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            if [ "$HIGH" -gt 0 ]; then
+              echo "⚠️ **Action Required**: $HIGH high-risk vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "✅ **Good**: No high-risk vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ No report generated" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📁 Reports" >> $GITHUB_STEP_SUMMARY
+          echo "- Baseline scan reports are available in artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "- Retention: 30 days" >> $GITHUB_STEP_SUMMARY
+        shell: bash
