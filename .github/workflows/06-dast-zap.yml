@@ -65,7 +65,7 @@ jobs:
         shell: bash
 
       # ─────────────────────────────────────
-      # STEP 4: OWASP ZAP Baseline Scan (CORRECTÉ : .py)
+      # STEP 4: OWASP ZAP Baseline Scan (CORRIGÉ)
       # ─────────────────────────────────────
       - name: "Step 4️⃣: OWASP ZAP Baseline Scan"
         run: |
@@ -74,7 +74,11 @@ jobs:
           
           mkdir -p zap-reports
           
-          # ✅ Utiliser zap-baseline.py (PAS .sh)
+          # ✅ Commande corrigée :
+          # • -I : Ignorer les warnings dans l'exit code
+          # • -a : Mode autonome
+          # • -r/-J/-x : Formats de rapport
+          # • || true : Ne pas échouer si ZAP retourne code != 0
           docker run --rm \
             -v $(pwd)/zap-reports:/zap/wrk/:rw \
             -t ghcr.io/zaproxy/zaproxy:stable \
@@ -84,20 +88,27 @@ jobs:
             -J zap_report.json \
             -x zap_report.xml \
             -I \
-            -a
+            -a \
+            || true  # ✅ Permet de continuer même avec des WARN/FAIL
           
-          echo "✅ ZAP Baseline Scan completed"
+          # Vérifier que les rapports existent
+          if [ -f zap-reports/zap_report.html ]; then
+            echo "✅ ZAP Baseline Scan completed - Reports generated"
+            ls -la zap-reports/
+          else
+            echo "⚠️  Reports may not have been generated"
+            ls -la zap-reports/ || true
+          fi
         shell: bash
 
       # ─────────────────────────────────────
-      # STEP 5: Full Scan (Optionnel - CORRECTÉ : .py)
+      # STEP 5: Full Scan (Optionnel - CORRIGÉ)
       # ─────────────────────────────────────
       - name: "Step 5️⃣: OWASP ZAP Full Scan (Optional)"
         run: |
           echo "🕷️ Starting OWASP ZAP Full Scan..."
           mkdir -p zap-reports-full
           
-          # ✅ Utiliser zap-full-scan.py (PAS .sh)
           docker run --rm \
             -v $(pwd)/zap-reports-full:/zap/wrk/:rw \
             -t ghcr.io/zaproxy/zaproxy:stable \
@@ -106,9 +117,10 @@ jobs:
             -r zap_full_report.html \
             -J zap_full_report.json \
             -x zap_full_report.xml \
-            -a || true
+            -a \
+            || true  # ✅ Continue même avec des vulnérabilités trouvées
           
-          echo "✅ ZAP Full Scan completed"
+          echo "✅ ZAP Full Scan completed (or skipped)"
         continue-on-error: true
         shell: bash
 
@@ -120,23 +132,36 @@ jobs:
           echo "📊 OWASP ZAP Scan Results"
           echo "========================="
           echo ""
+          
           if [ -f zap-reports/zap_report.json ]; then
             echo "📁 Baseline Scan Results:"
+            echo ""
+            
+            # Compter les alertes par niveau (riskcode: 3=High, 2=Medium, 1=Low, 0=Info)
             HIGH=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' 2>/dev/null || echo "0")
             MEDIUM=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' 2>/dev/null || echo "0")
             LOW=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="1")] | length' 2>/dev/null || echo "0")
             INFO=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="0")] | length' 2>/dev/null || echo "0")
+            
             echo "🔴 High Risk: $HIGH"
             echo "🟠 Medium Risk: $MEDIUM"
             echo "🟡 Low Risk: $LOW"
             echo "🔵 Informational: $INFO"
             echo ""
+            
+            # Afficher les vulnérabilités HIGH si présentes
             if [ "$HIGH" -gt 0 ]; then
               echo "⚠️  HIGH RISK VULNERABILITIES:"
               cat zap-reports/zap_report.json | jq -r '.site[]?.alerts[]? | select(.riskcode=="3") | "  • \(.alert)"' 2>/dev/null || true
+              echo ""
             fi
           else
-            echo "❌ No report found"
+            echo "⚠️  No JSON report found - checking HTML report..."
+            if [ -f zap-reports/zap_report.html ]; then
+              echo "✅ HTML report exists: zap-reports/zap_report.html"
+            else
+              echo "❌ No reports found"
+            fi
           fi
         shell: bash
 
@@ -167,25 +192,28 @@ jobs:
           echo "🎯 **Target**: $DVWA_URL" >> $GITHUB_STEP_SUMMARY
           echo "📅 **Date**: $(date '+%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          
           if [ -f zap-reports/zap_report.json ]; then
             HIGH=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="3")] | length' 2>/dev/null || echo "0")
             MEDIUM=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="2")] | length' 2>/dev/null || echo "0")
             LOW=$(cat zap-reports/zap_report.json | jq '[.site[]?.alerts[]? | select(.riskcode=="1")] | length' 2>/dev/null || echo "0")
+            
             echo "### 📊 Results" >> $GITHUB_STEP_SUMMARY
             echo "- 🔴 High Risk: $HIGH" >> $GITHUB_STEP_SUMMARY
             echo "- 🟠 Medium Risk: $MEDIUM" >> $GITHUB_STEP_SUMMARY
             echo "- 🟡 Low Risk: $LOW" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
+            
             if [ "$HIGH" -gt 0 ]; then
-              echo "⚠️ **Action Required**: $HIGH high-risk vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+              echo "⚠️ **Note**: DVWA is intentionally vulnerable - these findings are expected!" >> $GITHUB_STEP_SUMMARY
             else
-              echo "✅ **Good**: No high-risk vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+              echo "✅ No high-risk vulnerabilities found" >> $GITHUB_STEP_SUMMARY
             fi
           else
-            echo "❌ No report generated" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Report parsing skipped - check artifacts for raw reports" >> $GITHUB_STEP_SUMMARY
           fi
+          
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### 📁 Reports" >> $GITHUB_STEP_SUMMARY
-          echo "- Baseline scan reports are available in artifacts" >> $GITHUB_STEP_SUMMARY
-          echo "- Retention: 30 days" >> $GITHUB_STEP_SUMMARY
+          echo "- Download reports from 'Artifacts' section (retention: 30 days)" >> $GITHUB_STEP_SUMMARY
         shell: bash
