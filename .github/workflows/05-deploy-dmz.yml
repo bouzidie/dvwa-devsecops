@@ -30,7 +30,7 @@ jobs:
         uses: hashicorp/vault-action@v2
         with:
           url: ${{ secrets.VAULT_ADDR2 }}
-          token: ${{ secrets.VAULT_TOKEN }}
+          token: ${{ secrets.VAULT_TOKEN2 }}
           method: token
           exportEnv: true
           tlsSkipVerify: true
