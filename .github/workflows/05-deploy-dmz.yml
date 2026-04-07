@@ -34,6 +34,7 @@ jobs:
           method: token
           exportEnv: true
           tlsSkipVerify: true
+          kvVersion: 2
           secrets: |
             secret/data/devsecops/remediation ssh_deploy_key | SSH_DEPLOY_KEY ;
             secret/data/devsecops/remediation dmz_host | DMZ_HOST ;
