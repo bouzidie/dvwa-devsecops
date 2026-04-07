@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
 
       # ─────────────────────────────────────
-      # STEP 2: Récupérer credentials via Vault CLI (Méthode fiable)
+      # STEP 2: Récupérer credentials via Vault CLI
       # ─────────────────────────────────────
       - name: "Step 2️⃣: Get Credentials via Vault CLI"
         run: |
@@ -89,48 +89,72 @@ jobs:
           echo "✅ SSH key configured for $DMZ_HOST"
 
       # ─────────────────────────────────────
-      # STEP 4: Déployer sur DMZ (Méthode robuste avec paramètres)
+      # STEP 4: Déployer sur DMZ (Via Administrator - PAS besoin d'Internet DMZ)
       # ─────────────────────────────────────
-      - name: "Step 4️⃣: Deploy Application to DMZ"
+      - name: "Step 4️⃣: Deploy Application to DMZ (via Administrator)"
         run: |
           echo "🚀 Deploying to $DMZ_USER@$DMZ_HOST..."
           
-          # Exécution distante avec passage sécurisé des variables
-          ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST bash -s \
-            "$DMZ_DEPLOY_PATH" "$GHCR_TOKEN" "$GHCR_USERNAME" "$GITHUB_REPOSITORY_OWNER" << 'ENDSSH'
+          # 1. Login GHCR sur Administrator (runner)
+          echo "🔐 Logging to GHCR on Administrator..."
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+          
+          # 2. Pull l'image sur Administrator
+          echo "📦 Pulling image on Administrator..."
+          docker pull ghcr.io/$GITHUB_REPOSITORY_OWNER/dvwa-devsecops:latest
+          
+          # 3. Sauvegarder l'image dans un fichier tar
+          echo "💾 Saving image to tar file..."
+          docker save ghcr.io/$GITHUB_REPOSITORY_OWNER/dvwa-devsecops:latest -o /tmp/dvwa-image.tar
+          
+          # 4. Copier le fichier sur la DMZ via SCP (utilise SSH qui fonctionne)
+          echo "📤 Copying image to DMZ via SCP..."
+          scp -i ~/.ssh/dvwa-deploy-key -o StrictHostKeyChecking=no \
+            /tmp/dvwa-image.tar $DMZ_USER@$DMZ_HOST:/tmp/dvwa-image.tar
+          
+          # 5. Charger et déployer sur la DMZ
+          echo "🔧 Loading and deploying on DMZ..."
+          ssh -i ~/.ssh/dvwa-deploy-key -o StrictHostKeyChecking=no $DMZ_USER@$DMZ_HOST bash -s "$DMZ_DEPLOY_PATH" << 'ENDSSH'
             set -e
             DEPLOY_PATH="$1"
-            TOKEN="$2"
-            USER="$3"
-            REPO_OWNER="$4"
             
             cd "$DEPLOY_PATH"
             
-            echo "🔐 Logging to GHCR..."
-            echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
+            # Charger l'image depuis le fichier tar
+            echo "📦 Loading image from tar..."
+            docker load -i /tmp/dvwa-image.tar
             
+            # Stop old container if exists
             echo "🛑 Stopping old container..."
             docker stop dvwa-app 2>/dev/null || true
             docker rm dvwa-app 2>/dev/null || true
             
-            echo "📦 Pulling latest image..."
-            docker pull ghcr.io/$REPO_OWNER/dvwa-devsecops:latest
-            
+            # Start new container with docker-compose
             echo "🚀 Starting new container..."
             docker compose up -d
             
-            echo "⏳ Waiting for application health..."
-            sleep 15
+            # Cleanup tar file
+            rm -f /tmp/dvwa-image.tar
             
+            # Wait for application to be ready
+            echo "⏳ Waiting for application health check..."
+            sleep 20
+            
+            # Verify deployment
             echo "🔍 Verifying deployment..."
-            if curl -sf http://localhost:80 > /dev/null; then
-              echo "✅ Deployment successful! DVWA is running."
+            if curl -sf --max-time 10 http://localhost:80 > /dev/null; then
+              echo "✅ Deployment successful! DVWA is running on port 80."
             else
-              echo "❌ Deployment failed! Application not responding."
-              docker logs dvwa-app --tail 20
+              echo "❌ Deployment failed! Application not responding on port 80."
+              echo "📋 Docker logs:"
+              docker logs dvwa-app --tail 30
               exit 1
             fi
           ENDSSH
+          
+          # Cleanup local tar file
+          rm -f /tmp/dvwa-image.tar
+          echo "✅ Deployment pipeline completed!"
         env:
           GHCR_USERNAME: ${{ env.GHCR_USERNAME }}
           GHCR_TOKEN: ${{ env.GHCR_TOKEN }}
@@ -163,4 +187,5 @@ jobs:
           echo "✅ DVWA deployed to DMZ" >> $GITHUB_STEP_SUMMARY
           echo "📍 Host: \`$DMZ_HOST\`" >> $GITHUB_STEP_SUMMARY
           echo "🌐 URL: [http://$DMZ_HOST:80](http://$DMZ_HOST:80)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
           echo "🔍 Next: OWASP ZAP DAST Scan (Stage 6)" >> $GITHUB_STEP_SUMMARY
