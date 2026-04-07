@@ -1,5 +1,5 @@
 # ============================================
-# WORKFLOW: Stage 5 - Deploy to DMZ (DEBUG ULTIME)
+# WORKFLOW: Stage 5 - Deploy to DMZ
 # ============================================
 
 name: "Stage 5: Deploy to DMZ"
@@ -18,84 +18,149 @@ jobs:
     
     steps:
       # ─────────────────────────────────────
-      # STEP 1: Checkout
+      # STEP 1: Checkout Repository
       # ─────────────────────────────────────
       - name: "Step 1️⃣: Checkout Repository"
         uses: actions/checkout@v4
 
       # ─────────────────────────────────────
-      # STEP 2: DEBUG ULTIME - Explorer Vault
+      # STEP 2: Récupérer credentials via Vault CLI (Méthode fiable)
       # ─────────────────────────────────────
-      - name: "Step 2️⃣: ULTIMATE Vault Debug"
+      - name: "Step 2️⃣: Get Credentials via Vault CLI"
         run: |
-          echo "=== 🔍 ULTIMATE VAULT DEBUG ==="
-          echo ""
+          # Configurer l'environnement pour la CLI Vault
+          export VAULT_ADDR="${{ secrets.VAULT_ADDR2 }}"
+          export VAULT_TOKEN="${{ secrets.VAULT_TOKEN2 }}"
           
-          # Variables
-          VAULT_ADDR="${{ secrets.VAULT_ADDR2 }}"
-          VAULT_TOKEN="${{ secrets.VAULT_TOKEN2 }}"
+          echo "🔐 Loading secrets from Vault via CLI..."
           
-          echo "📍 Vault Address: $VAULT_ADDR"
-          echo "🔑 Token (first 10 chars): ${VAULT_TOKEN:0:10}..."
-          echo ""
+          # Fonction pour lire un champ d'un secret (KV v2)
+          get_secret() {
+            vault kv get -format=json "$1" 2>/dev/null | jq -r ".data.data.$2 // empty"
+          }
           
-          # 1. Health check
-          echo "1️⃣ Health Check:"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/sys/health" | jq .
-          echo ""
+          # Lire les secrets remediation
+          DMZ_HOST=$(get_secret "secret/data/devsecops/remediation" "dmz_host")
+          DMZ_USER=$(get_secret "secret/data/devsecops/remediation" "dmz_user")
+          DMZ_DEPLOY_PATH=$(get_secret "secret/data/devsecops/remediation" "dmz_deploy_path")
+          SSH_DEPLOY_KEY=$(get_secret "secret/data/devsecops/remediation" "ssh_deploy_key")
           
-          # 2. Token lookup (voir les policies)
-          echo "2️⃣ Token Info (policies):"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/auth/token/lookup-self" | jq '.data.policies'
-          echo ""
+          # Lire les secrets registry
+          GHCR_USERNAME=$(get_secret "secret/data/devsecops/registry" "ghcr_username")
+          GHCR_TOKEN=$(get_secret "secret/data/devsecops/registry" "ghcr_token")
           
-          # 3. Lister le contenu de secret/
-          echo "3️⃣ Listing secret/ (KV v2 list API):"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/?list=true" | jq .
-          echo ""
+          # Exporter dans GitHub Actions Environment (persistant entre les steps)
+          echo "DMZ_HOST=$DMZ_HOST" >> $GITHUB_ENV
+          echo "DMZ_USER=$DMZ_USER" >> $GITHUB_ENV
+          echo "DMZ_DEPLOY_PATH=$DMZ_DEPLOY_PATH" >> $GITHUB_ENV
+          echo "GHCR_USERNAME=$GHCR_USERNAME" >> $GITHUB_ENV
+          echo "GHCR_TOKEN=$GHCR_TOKEN" >> $GITHUB_ENV
           
-          # 4. Tenter différents chemins pour le secret
-          echo "4️⃣ Testing different paths for remediation secret:"
+          # Clé SSH (gestion multiligne propre)
+          echo "SSH_DEPLOY_KEY<<EOF" >> $GITHUB_ENV
+          echo "$SSH_DEPLOY_KEY" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
           
-          echo "   a) secret/data/devsecops/remediation (KV v2 standard):"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/devsecops/remediation" | jq '{errors: .errors, has_data: (.data.data != null)}'
+          # Vérification
+          echo "📊 Loaded values:"
+          echo "   DMZ_HOST: $DMZ_HOST"
+          echo "   DMZ_USER: $DMZ_USER"
+          echo "   GHCR_USERNAME: $GHCR_USERNAME"
+          echo "   SSH_KEY length: ${#SSH_DEPLOY_KEY} chars"
           
-          echo "   b) secret/devsecops/remediation (KV v1 style):"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/devsecops/remediation" | jq '{errors: .errors, has_data: (.data != null)}'
+          if [[ -z "$DMZ_HOST" || -z "$GHCR_TOKEN" || -z "$SSH_DEPLOY_KEY" ]]; then
+            echo "❌ ERROR: Failed to load one or more secrets from Vault"
+            echo "💡 Debug: Run 'vault kv get secret/data/devsecops/remediation' manually"
+            exit 1
+          fi
           
-          echo "   c) secret/data/remediation (sans sous-dossier):"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/remediation" | jq '{errors: .errors, has_data: (.data.data != null)}'
-          echo ""
-          
-          # 5. Vérifier les secrets registry aussi
-          echo "5️⃣ Testing registry secret:"
-          curl -s -H "X-Vault-Token: $VAULT_TOKEN" "$VAULT_ADDR/v1/secret/data/devsecops/registry" | jq '{errors: .errors, has_data: (.data.data != null)}'
-          echo ""
-          
-          # 6. Résumé
-          echo "=== 📊 RÉSUMÉ ==="
-          echo "Si vous voyez 'has_data: true' pour un chemin → utilisez ce chemin dans le workflow"
-          echo "Si toutes les réponses ont 'errors: []' → le token n'a pas accès ou les secrets n'existent pas"
-          echo ""
-          echo "💡 Pour corriger :"
-          echo "   1. Vérifiez que les secrets existent : vault kv list secret/data/devsecops/"
-          echo "   2. Vérifiez les policies du token : vault token lookup myroot"
-          echo "   3. Si besoin, recréez les secrets avec le bon chemin"
+          echo "✅ All secrets loaded successfully via Vault CLI"
         shell: bash
 
       # ─────────────────────────────────────
-      # STEPS 3-6: Désactivés pour le debug
+      # STEP 3: Configurer SSH
       # ─────────────────────────────────────
-      - name: "Step 3️⃣: Setup SSH (disabled)"
-        run: echo "⏸️ Disabled for debug"
-      
-      - name: "Step 4️⃣: Deploy (disabled)"
-        run: echo "⏸️ Disabled for debug"
-      
-      - name: "Step 5️⃣: Verify (disabled)"
-        run: echo "⏸️ Disabled for debug"
-      
-      - name: "Step 6️⃣: Summary"
+      - name: "Step 3️⃣: Setup SSH Key"
         run: |
-          echo "## 🔍 Debug Complete" >> $GITHUB_STEP_SUMMARY
-          echo "Voir les logs du Step 2 pour le diagnostic." >> $GITHUB_STEP_SUMMARY
+          mkdir -p ~/.ssh
+          echo "$SSH_DEPLOY_KEY" > ~/.ssh/dvwa-deploy-key
+          chmod 600 ~/.ssh/dvwa-deploy-key
+          ssh-keyscan $DMZ_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "✅ SSH key configured for $DMZ_HOST"
+
+      # ─────────────────────────────────────
+      # STEP 4: Déployer sur DMZ (Méthode robuste avec paramètres)
+      # ─────────────────────────────────────
+      - name: "Step 4️⃣: Deploy Application to DMZ"
+        run: |
+          echo "🚀 Deploying to $DMZ_USER@$DMZ_HOST..."
+          
+          # Exécution distante avec passage sécurisé des variables
+          ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST bash -s \
+            "$DMZ_DEPLOY_PATH" "$GHCR_TOKEN" "$GHCR_USERNAME" "$GITHUB_REPOSITORY_OWNER" << 'ENDSSH'
+            set -e
+            DEPLOY_PATH="$1"
+            TOKEN="$2"
+            USER="$3"
+            REPO_OWNER="$4"
+            
+            cd "$DEPLOY_PATH"
+            
+            echo "🔐 Logging to GHCR..."
+            echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
+            
+            echo "🛑 Stopping old container..."
+            docker stop dvwa-app 2>/dev/null || true
+            docker rm dvwa-app 2>/dev/null || true
+            
+            echo "📦 Pulling latest image..."
+            docker pull ghcr.io/$REPO_OWNER/dvwa-devsecops:latest
+            
+            echo "🚀 Starting new container..."
+            docker compose up -d
+            
+            echo "⏳ Waiting for application health..."
+            sleep 15
+            
+            echo "🔍 Verifying deployment..."
+            if curl -sf http://localhost:80 > /dev/null; then
+              echo "✅ Deployment successful! DVWA is running."
+            else
+              echo "❌ Deployment failed! Application not responding."
+              docker logs dvwa-app --tail 20
+              exit 1
+            fi
+          ENDSSH
+        env:
+          GHCR_USERNAME: ${{ env.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ env.GHCR_TOKEN }}
+          DMZ_DEPLOY_PATH: ${{ env.DMZ_DEPLOY_PATH }}
+
+      # ─────────────────────────────────────
+      # STEP 5: Vérifier le déploiement
+      # ─────────────────────────────────────
+      - name: "Step 5️⃣: Verify Deployment"
+        run: |
+          echo "🔍 Final verification..."
+          HTTP_STATUS=$(ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST \
+            "curl -s -o /dev/null -w '%{http_code}' http://localhost:80")
+          
+          echo "📊 HTTP Status: $HTTP_STATUS"
+          
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ Application is responding correctly!"
+          else
+            echo "⚠️ Application returned status: $HTTP_STATUS"
+          fi
+
+      # ─────────────────────────────────────
+      # STEP 6: Résumé
+      # ─────────────────────────────────────
+      - name: "Step 6️⃣: Deployment Summary"
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ DVWA deployed to DMZ" >> $GITHUB_STEP_SUMMARY
+          echo "📍 Host: \`$DMZ_HOST\`" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 URL: [http://$DMZ_HOST:80](http://$DMZ_HOST:80)" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 Next: OWASP ZAP DAST Scan (Stage 6)" >> $GITHUB_STEP_SUMMARY
