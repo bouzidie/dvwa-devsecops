@@ -1,0 +1,125 @@
+# ============================================
+# WORKFLOW: Stage 5 - Deploy to DMZ
+# ============================================
+
+name: "Stage 5: Deploy to DMZ"
+
+on:
+  workflow_run:
+    workflows: ["Stage 4: Security Scan - Trivy"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  deploy-dmz:
+    name: "🚀 Deploy to DMZ"
+    runs-on: self-hosted
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      # ─────────────────────────────────────
+      # STEP 1: Checkout
+      # ─────────────────────────────────────
+      - name: "Step 1️⃣: Checkout Repository"
+        uses: actions/checkout@v4
+
+      # ─────────────────────────────────────
+      # STEP 2: Récupérer credentials depuis Vault
+      # ─────────────────────────────────────
+      - name: "Step 2️⃣: Get Credentials from Vault"
+        uses: hashicorp/vault-action@v2
+        with:
+          url: ${{ secrets.VAULT_ADDR2 }}
+          token: ${{ secrets.VAULT_TOKEN2 }}
+          method: token
+          exportEnv: true
+          tlsSkipVerify: true
+          secrets: |
+            secret/data/devsecops/remediation ssh_deploy_key | SSH_DEPLOY_KEY ;
+            secret/data/devsecops/remediation dmz_host | DMZ_HOST ;
+            secret/data/devsecops/remediation dmz_user | DMZ_USER ;
+            secret/data/devsecops/remediation dmz_deploy_path | DMZ_DEPLOY_PATH ;
+            secret/data/devsecops/registry ghcr_username | GHCR_USERNAME ;
+            secret/data/devsecops/registry ghcr_token | GHCR_TOKEN ;
+
+      # ─────────────────────────────────────
+      # STEP 3: Configurer SSH
+      # ─────────────────────────────────────
+      - name: "Step 3️⃣: Setup SSH Key"
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_DEPLOY_KEY" > ~/.ssh/dvwa-deploy-key
+          chmod 600 ~/.ssh/dvwa-deploy-key
+          ssh-keyscan $DMZ_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
+          echo "✅ SSH configured"
+
+      # ─────────────────────────────────────
+      # STEP 4: Déployer sur DMZ
+      # ─────────────────────────────────────
+      - name: "Step 4️⃣: Deploy Application to DMZ"
+        run: |
+          echo "🚀 Deploying to $DMZ_USER@$DMZ_HOST..."
+          
+          ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST << 'ENDSSH'
+            cd $DMZ_DEPLOY_PATH
+            
+            # Login GHCR
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+            
+            # Stop old container
+            docker stop dvwa-app 2>/dev/null || true
+            docker rm dvwa-app 2>/dev/null || true
+            
+            # Pull latest image
+            docker pull ghcr.io/$GITHUB_REPOSITORY_OWNER/dvwa-devsecops:latest
+            
+            # Start new container
+            docker compose up -d
+            
+            # Wait for health
+            echo "⏳ Waiting for application..."
+            sleep 15
+            
+            # Verify
+            if curl -sf http://localhost:80 > /dev/null; then
+              echo "✅ Deployment successful!"
+            else
+              echo "❌ Deployment failed!"
+              exit 1
+            fi
+          ENDSSH
+        env:
+          GHCR_USERNAME: ${{ env.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ env.GHCR_TOKEN }}
+          DMZ_DEPLOY_PATH: ${{ env.DMZ_DEPLOY_PATH }}
+
+      # ─────────────────────────────────────
+      # STEP 5: Vérifier le déploiement
+      # ─────────────────────────────────────
+      - name: "Step 5️⃣: Verify Deployment"
+        run: |
+          echo "🔍 Verifying deployment..."
+          
+          HTTP_STATUS=$(ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST \
+            "curl -s -o /dev/null -w '%{http_code}' http://localhost:80")
+          
+          echo "HTTP Status: $HTTP_STATUS"
+          
+          if [ "$HTTP_STATUS" = "200" ]; then
+            echo "✅ Application is responding!"
+          else
+            echo "⚠️ Application status: $HTTP_STATUS"
+          fi
+
+      # ─────────────────────────────────────
+      # STEP 6: Résumé
+      # ─────────────────────────────────────
+      - name: "Step 6️⃣: Deployment Summary"
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ DVWA deployed to DMZ" >> $GITHUB_STEP_SUMMARY
+          echo "📍 Host: $DMZ_HOST" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 URL: http://$DMZ_HOST:80" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔍 Next: OWASP ZAP DAST Scan" >> $GITHUB_STEP_SUMMARY
