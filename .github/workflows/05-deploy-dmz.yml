@@ -1,5 +1,5 @@
 # ============================================
-# WORKFLOW: Stage 5 - Deploy to DMZ
+# WORKFLOW: Stage 5 - Deploy to DMZ (DEBUG)
 # ============================================
 
 name: "Stage 5: Deploy to DMZ"
@@ -18,44 +18,53 @@ jobs:
     
     steps:
       # ─────────────────────────────────────
-      # STEP 1: Checkout Repository
+      # STEP 1: Checkout
       # ─────────────────────────────────────
       - name: "Step 1️⃣: Checkout Repository"
         uses: actions/checkout@v4
 
       # ─────────────────────────────────────
-      # STEP 2: Récupérer credentials via API Vault (KV v2)
+      # STEP 2: DIAGNOSTIC VAULT
       # ─────────────────────────────────────
-      - name: "Step 2️⃣: Get Credentials from Vault"
+      - name: "Step 2️⃣: DEBUG Vault Connection"
         run: |
-          VAULT_ADDR="${{ secrets.VAULT_ADDR2 }}"
-          VAULT_TOKEN="${{ secrets.VAULT_TOKEN2 }}"
+          echo "=== 🕵️♂️ DÉBUT DU DIAGNOSTIC VAULT ==="
           
-          # Fonction pour extraire un champ (format KV v2)
-          get_vault() {
-            curl -s -H "X-Vault-Token: $VAULT_TOKEN" \
-              "$VAULT_ADDR/v1/$1" | jq -r ".data.data.$2 // empty"
-          }
+          # 1. Vérifier que les secrets GitHub existent
+          echo "1. Vérification des Secrets GitHub :"
+          if [ -z "${{ secrets.VAULT_ADDR2 }}" ]; then echo "❌ VAULT_ADDR2 est VIDE"; else echo "✅ VAULT_ADDR2 est défini"; fi
+          if [ -z "${{ secrets.VAULT_TOKEN2 }}" ]; then echo "❌ VAULT_TOKEN2 est VIDE"; else echo "✅ VAULT_TOKEN2 est défini"; fi
           
-          # Charger les secrets dans GitHub Actions Environment
-          echo "DMZ_HOST=$(get_vault 'secret/data/devsecops/remediation' 'dmz_host')" >> $GITHUB_ENV
-          echo "DMZ_USER=$(get_vault 'secret/data/devsecops/remediation' 'dmz_user')" >> $GITHUB_ENV
-          echo "DMZ_DEPLOY_PATH=$(get_vault 'secret/data/devsecops/remediation' 'dmz_deploy_path')" >> $GITHUB_ENV
-          echo "GHCR_USERNAME=$(get_vault 'secret/data/devsecops/registry' 'ghcr_username')" >> $GITHUB_ENV
-          echo "GHCR_TOKEN=$(get_vault 'secret/data/devsecops/registry' 'ghcr_token')" >> $GITHUB_ENV
+          # 2. Installer jq si manquant
+          which jq || (echo "Installation de jq..." && sudo apt-get update && sudo apt-get install -y jq)
           
-          # Clé SSH (gestion multiligne propre pour $GITHUB_ENV)
-          SSH_KEY=$(get_vault 'secret/data/devsecops/remediation' 'ssh_deploy_key')
-          echo "SSH_DEPLOY_KEY<<EOF" >> $GITHUB_ENV
-          echo "$SSH_KEY" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
+          # 3. Tester la connectivité vers Vault
+          echo "2. Test de connectivité vers : ${{ secrets.VAULT_ADDR2 }}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.VAULT_ADDR2 }}/v1/sys/health")
+          echo "Code HTTP Santé Vault : $HTTP_CODE"
           
-          # Vérification rapide
-          if [[ -z "$DMZ_HOST" || -z "$GHCR_TOKEN" || -z "$SSH_KEY" ]]; then
-            echo "❌ Échec: Secrets non récupérés depuis Vault"
-            exit 1
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ ÉCHEC : Impossible de contacter Vault."
+            echo "💡 SOLUTION : Vérifiez que VAULT_ADDR2 utilise l'IP LAN (ex: http://192.168.40.100:8200) et non 127.0.0.1"
           fi
-          echo "✅ Secrets chargés avec succès depuis Vault"
+          
+          # 4. Tenter de lire le secret
+          echo "3. Tentative de lecture du secret..."
+          RESPONSE=$(curl -s -H "X-Vault-Token: ${{ secrets.VAULT_TOKEN2 }}" "${{ secrets.VAULT_ADDR2 }}/v1/secret/data/devsecops/remediation")
+          echo "Réponse brute (masquée partiellement) : ${RESPONSE:0:100}..."
+          
+          # Extraire un champ test
+          DMZ_HOST=$(echo "$RESPONSE" | jq -r '.data.data.dmz_host // empty')
+          
+          if [ -z "$DMZ_HOST" ]; then
+            echo "❌ ÉCHEC : Le secret n'a pas pu être lu ou est vide."
+            echo "💡 VÉRIFIEZ : Le Token est-il correct ? Le chemin 'secret/data/...' est-il bon ?"
+            # On ne fait pas exit 1 ici pour voir la suite, mais le job échouera plus loin
+          else
+            echo "✅ SUCCÈS : Secret lu ! DMZ_HOST = $DMZ_HOST"
+          fi
+          
+          echo "=== 🕵️‍♂️ FIN DU DIAGNOSTIC ==="
         shell: bash
 
       # ─────────────────────────────────────
@@ -63,85 +72,24 @@ jobs:
       # ─────────────────────────────────────
       - name: "Step 3️⃣: Setup SSH Key"
         run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_DEPLOY_KEY" > ~/.ssh/dvwa-deploy-key
-          chmod 600 ~/.ssh/dvwa-deploy-key
-          ssh-keyscan $DMZ_HOST >> ~/.ssh/known_hosts 2>/dev/null || true
-          echo "✅ SSH key configured"
+          # Note: Ce step échouera car les variables ne sont pas exportées dans le mode DEBUG
+          echo "⚠️ Ce step est désactivé en mode DEBUG."
+        shell: bash
 
       # ─────────────────────────────────────
-      # STEP 4: Déployer sur DMZ (Méthode robuste)
+      # STEP 4: Déployer sur DMZ
       # ─────────────────────────────────────
-      - name: "Step 4️⃣: Deploy Application to DMZ"
-        run: |
-          echo "🚀 Deploying to $DMZ_USER@$DMZ_HOST..."
-          
-          # Exécution distante sécurisée avec passage de paramètres
-          ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST bash -s \
-            "$DMZ_DEPLOY_PATH" "$GHCR_TOKEN" "$GHCR_USERNAME" "$GITHUB_REPOSITORY_OWNER" << 'ENDSSH'
-            set -e
-            DEPLOY_PATH="$1"
-            TOKEN="$2"
-            USER="$3"
-            REPO_OWNER="$4"
-            
-            cd "$DEPLOY_PATH"
-            
-            # Login GHCR
-            echo "$TOKEN" | docker login ghcr.io -u "$USER" --password-stdin
-            
-            # Stop old container
-            docker stop dvwa-app 2>/dev/null || true
-            docker rm dvwa-app 2>/dev/null || true
-            
-            # Pull latest image
-            docker pull ghcr.io/$REPO_OWNER/dvwa-devsecops:latest
-            
-            # Start new container
-            docker compose up -d
-            
-            # Wait for health
-            echo "⏳ Waiting for application..."
-            sleep 15
-            
-            # Verify
-            if curl -sf http://localhost:80 > /dev/null; then
-              echo "✅ Deployment successful!"
-            else
-              echo "❌ Deployment failed!"
-              exit 1
-            fi
-          ENDSSH
-        env:
-          GHCR_USERNAME: ${{ env.GHCR_USERNAME }}
-          GHCR_TOKEN: ${{ env.GHCR_TOKEN }}
-          DMZ_DEPLOY_PATH: ${{ env.DMZ_DEPLOY_PATH }}
+      - name: "Step 4️⃣: Deploy Application"
+        run: echo "⚠️ Déploiement désactivé en mode DEBUG."
 
       # ─────────────────────────────────────
-      # STEP 5: Vérifier le déploiement
+      # STEP 5: Vérifier
       # ─────────────────────────────────────
-      - name: "Step 5️⃣: Verify Deployment"
-        run: |
-          echo "🔍 Verifying deployment..."
-          HTTP_STATUS=$(ssh -i ~/.ssh/dvwa-deploy-key $DMZ_USER@$DMZ_HOST \
-            "curl -s -o /dev/null -w '%{http_code}' http://localhost:80")
-          
-          echo "HTTP Status: $HTTP_STATUS"
-          if [ "$HTTP_STATUS" = "200" ]; then
-            echo "✅ Application is responding!"
-          else
-            echo "⚠️ Application status: $HTTP_STATUS"
-          fi
+      - name: "Step 5️⃣: Verify"
+        run: echo "⚠️ Vérification désactivée en mode DEBUG."
 
       # ─────────────────────────────────────
       # STEP 6: Résumé
       # ─────────────────────────────────────
-      - name: "Step 6️⃣: Deployment Summary"
-        run: |
-          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ DVWA deployed to DMZ" >> $GITHUB_STEP_SUMMARY
-          echo "📍 Host: $DMZ_HOST" >> $GITHUB_STEP_SUMMARY
-          echo "🌐 URL: http://$DMZ_HOST:80" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "🔍 Next: OWASP ZAP DAST Scan" >> $GITHUB_STEP_SUMMARY
+      - name: "Step 6️⃣: Summary"
+        run: echo "Diagnostic terminé."
