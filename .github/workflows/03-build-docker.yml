@@ -6,7 +6,7 @@ name: "Stage 3: Build Docker Image"
 
 on:
   workflow_run:
-    workflows: ["Stage 2: Dependencies - Snyk Scan"]
+    workflows: ["Stage 1: SAST - SonarQube Analysis"]
     types: [completed]
   workflow_dispatch:  # Permet de lancer manuellement
 
