@@ -1,8 +1,7 @@
 # 🔐 AutoGuard-AI
 
 ### SOC hybride intelligent pour la détection des menaces et la réponse automatisée aux incidents
-
-\<p align="center">   \<strong>Intelligence artificielle · Cybersécurité · DevSecOps · SIEM · Automatisation\</strong> \</p>
+ntelligence artificielle · Cybersécurité · DevSecOps · SIEM · Automatisation
 
 ---
 
@@ -160,5 +159,5 @@ Les captures d'écran et les démonstrations de la plateforme seront ajoutées d
 
 Le schéma suivant présente l'architecture d'AutoGuard-AI, les différentes zones réseau ainsi que les interactions entre les composants de détection, d'analyse et de remédiation.
 
-\<p align="center">   \<img src="images/autoguard-architecture.png"        alt="Architecture globale AutoGuard-AI"        width="100%"> \</p>
+\<p align="center">   \<img src="autoguard-architecture.png"        alt="Architecture globale AutoGuard-AI"        width="100%"> \</p>
 
